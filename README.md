@@ -1,12 +1,13 @@
 # App Docs Product
 
-Aplicacao Flask para gerar documentos `.docx` a partir de um template de proposta de OS.
+Aplicacao Flask para gerar documentos `.docx` a partir de templates de proposta de OS e relatorio de entrega.
 
 ## Tecnologias
 
 - Python 3.11+
 - Flask
 - python-docx
+- PyMuPDF
 - python-dotenv
 - Flask-SQLAlchemy
 - Flask-Migrate
@@ -16,6 +17,9 @@ Aplicacao Flask para gerar documentos `.docx` a partir de um template de propost
 
 ```text
 app_docs_product/
+  templates_docx/
+    proposta_os/
+    relatorio_entrega/
   app/
     routes/
     services/
@@ -73,7 +77,8 @@ Observacoes importantes:
 
 - Se `DATABASE_URL` nao for definida, o projeto usa SQLite local em `app.db`.
 - O caminho do template DOCX e definido por `TEMPLATE_DOCX` em `config.py`.
-- Os arquivos gerados sao salvos em `UPLOAD_FOLDER` (pasta `uploads/`).
+- O template de relatorio de entrega e definido por `TEMPLATE_RELATORIO_ENTREGA_DOCX`.
+- Os arquivos gerados sao salvos em `UPLOAD_FOLDER` (pasta `uploads/`) com separacao por `propostas/`, `hus/` e `relatorios/`.
 
 ## Executando o projeto
 
@@ -129,17 +134,19 @@ docker run --rm -p 5000:5000 --env-file .env -v ${PWD}/uploads:/app/uploads app-
 
 - Pagina inicial em `/`
 - Geracao de Proposta de OS em `/documentos/proposta_os`
+- Geracao de Relatorio de Entrega em `/documentos/relatorio_entrega`
 - Download de arquivo gerado em `/documentos/download/<filename>`
-- Pagina de relatorio de entrega em `/documentos/relatorio_entrega`
 
 ## Fluxo de geracao de documento
 
-1. Usuario preenche o formulario de Proposta de OS.
-2. Frontend envia os dados em JSON para `POST /documentos/proposta_os`.
+1. Usuario preenche um formulario de Proposta de OS ou Relatorio de Entrega.
+2. Frontend envia dados para os endpoints:
+   - `POST /documentos/proposta_os` (JSON)
+   - `POST /documentos/relatorio_entrega` (multipart com arquivos)
 3. O servico `DocxService`:
-   - carrega o template DOCX configurado;
+   - carrega o template DOCX configurado para cada funcionalidade;
    - substitui placeholders por dados do formulario;
-   - calcula valor com base em `qtd_hst * 200` e formata no padrao pt-BR (`24.600,00`);
+   - para relatorio de entrega, replica a introducao da proposta e inclui HUs (lista e conteudo detalhado no item 9);
    - salva o arquivo final em `uploads/`.
 4. A API retorna o nome do arquivo para download.
 

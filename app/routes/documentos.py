@@ -26,6 +26,28 @@ def download_file(filename):
         return send_file(filepath, as_attachment=True)
     return "Arquivo não encontrado", 404
 
-@documentos_bp.route('/relatorio_entrega')
+@documentos_bp.route('/relatorio_entrega', methods=['GET', 'POST'])
 def relatorio_entrega():
-    return render_template('relatorio_entrega.html')
+    if request.method == 'POST':
+        try:
+            autor = request.form.get('autor', '').strip()
+            proposta_file = request.files.get('proposta_file')
+            hu_files = request.files.getlist('hu_files')
+
+            if not autor:
+                return jsonify({'success': False, 'error': 'Campo Autor é obrigatório.'}), 400
+            if not proposta_file or not proposta_file.filename:
+                return jsonify({'success': False, 'error': 'Upload da proposta é obrigatório.'}), 400
+            if not proposta_file.filename.lower().endswith('.docx'):
+                return jsonify({'success': False, 'error': 'A proposta deve ser um arquivo .docx.'}), 400
+            if not hu_files or all(not file.filename for file in hu_files):
+                return jsonify({'success': False, 'error': 'É necessário enviar pelo menos uma HU (PDF).'}), 400
+
+            service = DocxService()
+            filepath, _, _ = service.generate_relatorio_entrega(autor, proposta_file, hu_files)
+            return jsonify({'success': True, 'filename': os.path.basename(filepath)})
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 400
+
+    now = datetime.now().strftime('%d/%m/%Y')
+    return render_template('relatorio_entrega.html', now=now)

@@ -1,10 +1,108 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="container mt-5">
-    <div class="alert alert-info">
-        <h4 class="alert-heading"><i class="bi bi-cone-striped"></i> Funcionalidade em construção!</h4>
-        <p>A funcionalidade de Relatório de Entrega está sendo desenvolvida e estará disponível em breve.</p>
+<div class="container">
+    <h2 class="mb-4">Gerar Relatório de Entrega</h2>
+
+    <form id="relatorioForm" class="card p-4 shadow-sm">
+        <h5 class="border-bottom pb-2">Dados Principais</h5>
+        <div class="row g-3 mb-4">
+            <div class="col-sm-12 col-md-8">
+                <label for="autor" class="form-label">Autor *</label>
+                <input type="text" class="form-control" id="autor" name="autor" required>
+            </div>
+            <div class="col-sm-12 col-md-4 text-end">
+                <label class="form-label">Data Atual (Servidor)</label>
+                <input type="text" class="form-control text-end" value="{{ now }}" readonly disabled>
+            </div>
+        </div>
+
+        <h5 class="border-bottom pb-2">Arquivos de Entrada</h5>
+        <div class="row g-3 mb-4">
+            <div class="col-12">
+                <label for="proposta_file" class="form-label">Upload da Proposta (.docx) *</label>
+                <input type="file" class="form-control" id="proposta_file" name="proposta_file" accept=".docx" required>
+                <div class="form-text">A introdução da proposta será replicada na introdução do relatório.</div>
+            </div>
+            <div class="col-12">
+                <label for="hu_files" class="form-label">Upload das HUs (.pdf) *</label>
+                <input type="file" class="form-control" id="hu_files" name="hu_files" accept=".pdf" multiple required>
+                <div class="form-text">As HUs serão incluídas no diretório de HU e detalhadas no item 9 do relatório.</div>
+            </div>
+        </div>
+
+        <div class="d-flex flex-column flex-md-row justify-content-between mt-4 gap-3">
+            <button type="button" class="btn btn-secondary w-100 w-md-auto" id="clearFormBtn">Limpar Formulário</button>
+            <button type="submit" class="btn btn-success btn-lg w-100 w-md-auto">
+                <i class="bi bi-file-earmark-word"></i> Gerar Relatório
+            </button>
+        </div>
+    </form>
+</div>
+
+<div class="modal fade" id="successModal" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-success text-white">
+                <h5 class="modal-title">Sucesso!</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                Relatório de entrega gerado com sucesso.
+            </div>
+            <div class="modal-footer">
+                <a id="downloadBtn" href="#" class="btn btn-primary" onclick="closeModal()">Baixar Arquivo</a>
+            </div>
+        </div>
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function closeModal() {
+        const modalElement = document.getElementById('successModal');
+        const modal = bootstrap.Modal.getInstance(modalElement);
+        if (modal) {
+            modal.hide();
+        }
+    }
+
+    document.getElementById('clearFormBtn').addEventListener('click', () => {
+        if (confirm("Deseja realmente limpar todo o formulário?")) {
+            document.getElementById('relatorioForm').reset();
+        }
+    });
+
+    document.getElementById('relatorioForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = e.target;
+
+        if (!form.checkValidity()) {
+            alert("Campos obrigatórios necessários!");
+            return;
+        }
+
+        const formData = new FormData(form);
+        try {
+            const response = await fetch("{{ url_for('documentos.relatorio_entrega') }}", {
+                method: 'POST',
+                body: formData
+            });
+
+            const result = await response.json();
+            if (result.success) {
+                const modal = new bootstrap.Modal(document.getElementById('successModal'));
+                document.getElementById('downloadBtn').href = `/documentos/download/${result.filename}`;
+                modal.show();
+            } else {
+                alert("Erro ao gerar relatório!");
+                console.error(result.error);
+            }
+        } catch (error) {
+            alert("Erro ao gerar relatório!");
+            console.error(error);
+        }
+    });
+</script>
 {% endblock %}

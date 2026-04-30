@@ -5,5 +5,12 @@ __pycache__/
 **/__pycache__/
 uploads/*
 !uploads/.gitkeep
+!uploads/propostas/.gitkeep
+!uploads/hus/.gitkeep
+!uploads/relatorios/.gitkeep
+uploads/propostas/**
+uploads/hus/**
+uploads/relatorios/**
+templates_docx/**/*.docx
 Prompt_App_Docs_Product.txt
 *.pyc
