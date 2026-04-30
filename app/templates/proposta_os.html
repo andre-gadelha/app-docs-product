@@ -212,11 +212,11 @@
                 document.getElementById('downloadBtn').href = `/documentos/download/${result.filename}`;
                 modal.show();
             } else {
-                alert("Erro ao gerar documento!");
+                alert(`Erro ao gerar documento: ${result.error || 'falha desconhecida'}`);
                 console.error(result.error);
             }
         } catch (error) {
-            alert("Erro ao gerar documento!");
+            alert(`Erro ao gerar documento: ${error.message || 'falha de comunicação'}`);
             console.error(error);
         }
     });

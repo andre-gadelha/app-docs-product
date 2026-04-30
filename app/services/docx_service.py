@@ -13,6 +13,18 @@ from flask import current_app
 from werkzeug.utils import secure_filename
 
 class DocxService:
+    def _resolve_template_path(self, primary_key, legacy_key):
+        primary = current_app.config.get(primary_key)
+        legacy = current_app.config.get(legacy_key)
+        if primary and os.path.exists(primary):
+            return primary
+        if legacy and os.path.exists(legacy):
+            return legacy
+        missing = [p for p in [primary, legacy] if p]
+        raise FileNotFoundError(
+            f"Template não encontrado. Verifique um destes caminhos: {', '.join(missing)}"
+        )
+
     def _insert_after_paragraph(self, paragraph, text, align=None):
         new_p_elm = OxmlElement('w:p')
         paragraph._p.addnext(new_p_elm)
@@ -158,9 +170,7 @@ class DocxService:
 
     def generate_proposta_os(self, data):
         self._ensure_runtime_folders()
-        template_path = current_app.config['TEMPLATE_DOCX']
-        if not os.path.exists(template_path):
-            raise FileNotFoundError(f"Template não encontrado: {template_path}")
+        template_path = self._resolve_template_path('TEMPLATE_DOCX', 'LEGACY_TEMPLATE_DOCX')
 
         doc = Document(template_path)
 
@@ -229,10 +239,10 @@ class DocxService:
 
     def generate_relatorio_entrega(self, autor, proposta_file, hu_files):
         self._ensure_runtime_folders()
-
-        template_path = current_app.config['TEMPLATE_RELATORIO_ENTREGA_DOCX']
-        if not os.path.exists(template_path):
-            raise FileNotFoundError(f"Template não encontrado: {template_path}")
+        template_path = self._resolve_template_path(
+            'TEMPLATE_RELATORIO_ENTREGA_DOCX',
+            'LEGACY_TEMPLATE_RELATORIO_ENTREGA_DOCX'
+        )
 
         proposta_dir, hu_dir, relatorio_dir = self._new_execution_paths()
         proposta_filename = self._sanitize_upload_name(proposta_file.filename, 'proposta.docx')
