@@ -11,6 +11,9 @@ uploads/*
 uploads/propostas/**
 uploads/hus/**
 uploads/relatorios/**
+!uploads/propostas/.gitkeep
+!uploads/hus/.gitkeep
+!uploads/relatorios/.gitkeep
 templates_docx/**/*.docx
 Prompt_App_Docs_Product.txt
 *.pyc

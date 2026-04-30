@@ -8,6 +8,7 @@ import fitz
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from flask import current_app
+from werkzeug.utils import secure_filename
 
 class DocxService:
     def _ensure_runtime_folders(self):
@@ -31,11 +32,16 @@ class DocxService:
         return proposta_dir, hu_dir, relatorio_dir
 
     def _replace_text_preserve_format(self, paragraph, key, value):
-        if key in paragraph.text:
-            for run in paragraph.runs:
-                if key in run.text:
-                    run.text = run.text.replace(key, value)
-                    run.font.name = 'Inter'
+        if key not in paragraph.text:
+            return
+        if paragraph.runs:
+            full_text = paragraph.text.replace(key, value)
+            paragraph.runs[0].text = full_text
+            for run in paragraph.runs[1:]:
+                run.text = ''
+            paragraph.runs[0].font.name = 'Inter'
+        else:
+            paragraph.text = paragraph.text.replace(key, value)
 
     def _replace_placeholders_everywhere(self, doc, replacements):
         for p in doc.paragraphs:
@@ -71,6 +77,11 @@ class DocxService:
         paragraphs = [p.text.strip() for p in proposta_doc.paragraphs if p.text and p.text.strip()]
         if not paragraphs:
             return ''
+        for idx, text in enumerate(paragraphs):
+            lowered = text.casefold()
+            if lowered == 'introducao' or lowered == 'introdução':
+                if idx + 1 < len(paragraphs):
+                    return paragraphs[idx + 1]
         return paragraphs[0]
 
     def _extract_pdf_text(self, pdf_path):
@@ -113,10 +124,14 @@ class DocxService:
         hu_lines = [f"Anexo {i}: {hu_file.stem}" for i, hu_file in enumerate(hu_files, start=1)]
         text = '\n'.join(hu_lines) if hu_lines else 'Sem HUs enviadas.'
         for paragraph in doc.paragraphs:
-            if '<Lista HUs>' in paragraph.text:
-                paragraph.text = paragraph.text.replace('<Lista HUs>', text)
+            if '<Lista HUs>' in paragraph.text or '{{HU_LISTA}}' in paragraph.text:
+                paragraph.text = paragraph.text.replace('<Lista HUs>', text).replace('{{HU_LISTA}}', text)
                 for run in paragraph.runs:
                     run.font.name = 'Inter'
+
+    def _sanitize_upload_name(self, filename, fallback):
+        clean = secure_filename(filename or '')
+        return clean or fallback
 
     def generate_proposta_os(self, data):
         self._ensure_runtime_folders()
@@ -197,16 +212,21 @@ class DocxService:
             raise FileNotFoundError(f"Template não encontrado: {template_path}")
 
         proposta_dir, hu_dir, relatorio_dir = self._new_execution_paths()
-        proposta_target = proposta_dir / proposta_file.filename
+        proposta_filename = self._sanitize_upload_name(proposta_file.filename, 'proposta.docx')
+        proposta_target = proposta_dir / proposta_filename
         proposta_file.save(str(proposta_target))
 
         saved_hus = []
         for hu_file in hu_files:
             if not hu_file or not hu_file.filename:
                 continue
-            hu_target = hu_dir / hu_file.filename
+            hu_name = self._sanitize_upload_name(hu_file.filename, f'hu_{len(saved_hus)+1}.pdf')
+            hu_target = hu_dir / hu_name
             hu_file.save(str(hu_target))
             saved_hus.append(hu_target)
+
+        if not saved_hus:
+            raise ValueError('Nenhuma HU válida foi enviada para gerar o relatório.')
 
         introducao = self._extract_intro_from_proposta_docx(proposta_target)
         data_atual = datetime.now().strftime('%d/%m/%Y')
@@ -214,8 +234,12 @@ class DocxService:
         doc = Document(template_path)
         replacements = {
             '<Autor>': autor,
+            '{{AUTOR}}': autor,
             '<Data atual do servidor>': data_atual,
+            '{{DATA_ATUAL_SERVIDOR}}': data_atual,
             '<Introdução da Proposta>': introducao,
+            '<Introducao da Proposta>': introducao,
+            '{{INTRODUCAO_PROPOSTA}}': introducao,
         }
         self._replace_placeholders_everywhere(doc, replacements)
         self._write_hu_list_item_41(doc, saved_hus)
