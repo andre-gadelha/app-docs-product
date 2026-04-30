@@ -1,2 +1,9 @@
 .env
 GEMINI.md
+.idea/
+__pycache__/
+**/__pycache__/
+uploads/*
+!uploads/.gitkeep
+Prompt_App_Docs_Product.txt
+*.pyc
