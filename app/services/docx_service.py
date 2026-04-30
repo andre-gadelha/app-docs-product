@@ -6,11 +6,23 @@ from pathlib import Path
 
 import fitz
 from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+from docx.oxml import OxmlElement
+from docx.text.paragraph import Paragraph
 from flask import current_app
 from werkzeug.utils import secure_filename
 
 class DocxService:
+    def _insert_after_paragraph(self, paragraph, text, align=None):
+        new_p_elm = OxmlElement('w:p')
+        paragraph._p.addnext(new_p_elm)
+        new_p = Paragraph(new_p_elm, paragraph._parent)
+        if text:
+            new_p.add_run(text)
+        if align is not None:
+            new_p.alignment = align
+        return new_p
+
     def _ensure_runtime_folders(self):
         folders = [
             current_app.config['UPLOAD_FOLDER'],
@@ -94,31 +106,36 @@ class DocxService:
         return '\n'.join(full_text).strip()
 
     def _write_hu_item_9(self, doc, hu_files):
-        start_index = None
-        for idx, paragraph in enumerate(doc.paragraphs):
-            if paragraph.text.strip().startswith('9. Anexos'):
-                start_index = idx
+        anchor = None
+        for paragraph in doc.paragraphs:
+            text = paragraph.text.strip()
+            if '<Conteudo HUs Item 9>' in text or '{{HU_DETALHE_ITEM9}}' in text:
+                paragraph.text = text.replace('<Conteudo HUs Item 9>', '').replace('{{HU_DETALHE_ITEM9}}', '')
+                anchor = paragraph
+                break
+            if text.startswith('9. Anexos'):
+                anchor = paragraph
                 break
 
-        if start_index is None:
+        if anchor is None:
             doc.add_page_break()
-            doc.add_paragraph('9. Anexos')
-            start_index = len(doc.paragraphs) - 1
+            anchor = doc.add_paragraph('9. Anexos')
 
-        doc.add_page_break()
+        current = self._insert_after_paragraph(anchor, '')
         for index, hu_file in enumerate(hu_files, start=1):
-            doc.add_paragraph(f'Anexo {index}: {hu_file.stem}')
+            current = self._insert_after_paragraph(current, f'Anexo {index}: {hu_file.stem}')
             content = self._extract_pdf_text(hu_file)
             if content:
                 for line in content.splitlines():
                     cleaned = line.strip()
                     if cleaned:
-                        p = doc.add_paragraph(cleaned)
-                        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                        current = self._insert_after_paragraph(current, cleaned, WD_ALIGN_PARAGRAPH.JUSTIFY)
             else:
-                doc.add_paragraph('Conteúdo não extraído do PDF.')
+                current = self._insert_after_paragraph(current, 'Conteúdo não extraído do PDF.')
             if index < len(hu_files):
-                doc.add_page_break()
+                current = self._insert_after_paragraph(current, '')
+                run = current.add_run()
+                run.add_break(WD_BREAK.PAGE)
 
     def _write_hu_list_item_41(self, doc, hu_files):
         hu_lines = [f"Anexo {i}: {hu_file.stem}" for i, hu_file in enumerate(hu_files, start=1)]
@@ -128,6 +145,12 @@ class DocxService:
                 paragraph.text = paragraph.text.replace('<Lista HUs>', text).replace('{{HU_LISTA}}', text)
                 for run in paragraph.runs:
                     run.font.name = 'Inter'
+                return
+
+        for paragraph in doc.paragraphs:
+            if paragraph.text.strip().startswith('4.1.'):
+                self._insert_after_paragraph(paragraph, text)
+                return
 
     def _sanitize_upload_name(self, filename, fallback):
         clean = secure_filename(filename or '')
