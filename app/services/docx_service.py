@@ -12,6 +12,11 @@ class DocxService:
                     run.text = run.text.replace(key, value)
                     run.font.name = 'Inter'
 
+    def _format_brl_value(self, value):
+        """Formata valor numérico no padrão brasileiro sem prefixo de moeda."""
+        formatted = f"{value:,.2f}"
+        return formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+
     def generate_proposta_os(self, data):
         template_path = current_app.config['TEMPLATE_DOCX']
         if not os.path.exists(template_path):
@@ -31,7 +36,7 @@ class DocxService:
         qtd_hst = int(float(data.get('qtd_hst', 0))) # Formatação sem casas decimais
         itens = data.get('itens', [])
         data_atual = datetime.now().strftime('%d/%m/%Y')
-        valor_calculado = f"R$ {qtd_hst * 200:.2f}".replace('.', ',')
+        valor_calculado = self._format_brl_value(qtd_hst * 200)
 
         replacements = {
             '<Autor>': nome_autor,

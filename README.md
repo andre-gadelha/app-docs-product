@@ -57,6 +57,7 @@ pip install -r requirements.txt
 ## Configuracao de ambiente
 
 O projeto carrega variaveis a partir do arquivo `.env`.
+Se o arquivo nao existir, crie manualmente um `.env` na raiz do projeto antes de executar a aplicacao.
 
 Exemplo minimo:
 
@@ -92,6 +93,26 @@ A aplicacao sobe, por padrao, em:
 
 - [http://127.0.0.1:5000](http://127.0.0.1:5000)
 
+## Docker
+
+Build da imagem:
+
+```bash
+docker build -t app-docs-product:latest .
+```
+
+Executar container:
+
+```bash
+docker run --rm -p 5000:5000 --env-file .env app-docs-product:latest
+```
+
+Com volume para persistir os arquivos gerados em `uploads/`:
+
+```bash
+docker run --rm -p 5000:5000 --env-file .env -v ${PWD}/uploads:/app/uploads app-docs-product:latest
+```
+
 ## Funcionalidades atuais
 
 - Pagina inicial em `/`
@@ -106,7 +127,7 @@ A aplicacao sobe, por padrao, em:
 3. O servico `DocxService`:
    - carrega o template DOCX configurado;
    - substitui placeholders por dados do formulario;
-   - calcula valor com base em `qtd_hst * 200`;
+   - calcula valor com base em `qtd_hst * 200` e formata no padrao pt-BR (`24.600,00`);
    - salva o arquivo final em `uploads/`.
 4. A API retorna o nome do arquivo para download.
 
