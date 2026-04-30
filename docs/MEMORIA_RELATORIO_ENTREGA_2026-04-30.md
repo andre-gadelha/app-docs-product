@@ -57,6 +57,32 @@ Evolucao da aplicacao Flask `app_docs_product` para implementar a funcionalidade
 - Ajustes finos no layout/resultado do **Relatorio de Entrega** conforme feedback manual do usuario.
 - Revisao final de aderencia visual ao template real de entrega.
 
+## Atualizacao - 2026-04-30 (fim do dia)
+
+Evolucoes implementadas nesta etapa:
+
+- Nome do arquivo de saida do relatorio ajustado para o padrao:
+  - `Relatório de Entrega OS 'AnoOS'-'NúmeroOs' - 'AssuntoOS'.docx`
+- Fluxo de relatorio passou a:
+  - extrair `Ano OS` e `OS` da proposta enviada por upload (padrao de nome do arquivo da proposta);
+  - localizar a linha correspondente na planilha em `fonte_de_dados/`;
+  - mapear e preencher placeholders `{{xxx}}` com dados combinados de formulario, proposta e planilha.
+- Placeholders tratados no relatorio:
+  - `{{Autor}}`, `{{Data do Servidor}}`
+  - `{{ANO_OS}}`, `{{Ano_OS}}`, `{{OS}}`, `{{Assunto}}`, `{{Início}}`, `{{Fim}}`, `{{HST}}`, `{{Valor}}`
+  - placeholders da introducao da proposta
+  - placeholders de anexos (`{{HU 1}}`, `{{HU 2}}`, ..., `{{HU N}}`), incluindo limpeza de placeholders nao utilizados.
+- Formulario de relatorio atualizado para enviar `data_servidor` (hidden input) junto ao POST.
+- `config.py` atualizado para:
+  - template de relatorio no novo nome;
+  - configuracao de pasta `FONTE_DADOS_DIR`.
+- `.gitignore` atualizado para ignorar os arquivos de `fonte_de_dados`.
+
+Validacao realizada:
+
+- Teste de integracao do endpoint `POST /documentos/relatorio_entrega` executado com sucesso.
+- Geracao do `.docx` validada com substituicao de placeholders sem sobras `{{...}}`.
+
 ## Como retomar rapidamente
 
 1. Fazer checkout da branch `feature/relatorio-entrega`.

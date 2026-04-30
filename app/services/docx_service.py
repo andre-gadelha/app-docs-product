@@ -1,8 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
+import re
 import shutil
 import uuid
 from pathlib import Path
+import xml.etree.ElementTree as ET
+from zipfile import ZipFile
 
 import fitz
 from docx import Document
@@ -13,6 +16,8 @@ from flask import current_app
 from werkzeug.utils import secure_filename
 
 class DocxService:
+    XLSX_NS = {'a': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+
     def _resolve_template_path(self, config_key):
         template_path = current_app.config.get(config_key)
         if template_path and os.path.exists(template_path):
@@ -20,6 +25,15 @@ class DocxService:
         raise FileNotFoundError(
             f"Template não encontrado no caminho configurado: {template_path}"
         )
+
+    def _resolve_data_source_file(self):
+        base_dir = Path(current_app.config['FONTE_DADOS_DIR'])
+        if not base_dir.exists():
+            raise FileNotFoundError(f"Pasta de fonte de dados não encontrada: {base_dir}")
+        xlsx_files = sorted(base_dir.glob('*.xlsx'))
+        if not xlsx_files:
+            raise FileNotFoundError(f"Nenhuma planilha .xlsx encontrada em: {base_dir}")
+        return xlsx_files[0]
 
     def _insert_after_paragraph(self, paragraph, text, align=None):
         new_p_elm = OxmlElement('w:p')
@@ -104,6 +118,109 @@ class DocxService:
                     return paragraphs[idx + 1]
         return paragraphs[0]
 
+    def _extract_proposta_identity(self, proposta_path, original_filename):
+        filename = Path(original_filename or proposta_path.name).name
+        filename_match = re.search(
+            r"(?i)proposta\s*os\s*(\d{4})\s*-\s*([0-9]+)\s*-\s*(.+?)\.docx$",
+            filename
+        )
+        if filename_match:
+            return {
+                'ano_os': filename_match.group(1),
+                'os': filename_match.group(2).zfill(4),
+                'assunto': filename_match.group(3).strip(),
+            }
+
+        proposta_doc = Document(str(proposta_path))
+        all_text = '\n'.join([p.text for p in proposta_doc.paragraphs if p.text]).strip()
+        text_match = re.search(r"(?i)(\d{4})\s*-\s*([0-9]{1,4})", all_text)
+        if text_match:
+            return {
+                'ano_os': text_match.group(1),
+                'os': text_match.group(2).zfill(4),
+                'assunto': '',
+            }
+        raise ValueError(
+            "Não foi possível identificar Ano OS e Número OS a partir da proposta enviada. "
+            "Use um arquivo no padrão: Proposta OS 2026-0032 - Assunto.docx"
+        )
+
+    def _normalize_header(self, header):
+        key = (header or '').strip().casefold()
+        aliases = {
+            'ano os': 'ano_os',
+            'ano_os': 'ano_os',
+            'os': 'os',
+            'assunto': 'assunto',
+            'início': 'inicio',
+            'inicio': 'inicio',
+            'fim': 'fim',
+            'hsts': 'hst',
+            'hst': 'hst',
+            'valor': 'valor',
+        }
+        return aliases.get(key, key)
+
+    def _read_xlsx_row_by_os(self, workbook_path, ano_os, os_number):
+        with ZipFile(workbook_path) as archive:
+            shared = []
+            if 'xl/sharedStrings.xml' in archive.namelist():
+                root = ET.fromstring(archive.read('xl/sharedStrings.xml'))
+                for item in root.findall('a:si', self.XLSX_NS):
+                    shared.append(''.join((t.text or '') for t in item.findall('.//a:t', self.XLSX_NS)))
+
+            sheet = ET.fromstring(archive.read('xl/worksheets/sheet1.xml'))
+            rows = []
+            for row in sheet.findall('a:sheetData/a:row', self.XLSX_NS):
+                values = {}
+                for cell in row.findall('a:c', self.XLSX_NS):
+                    ref = cell.attrib.get('r', 'A1')
+                    col_letters = ''.join(ch for ch in ref if ch.isalpha())
+                    index = 0
+                    for ch in col_letters:
+                        index = index * 26 + ord(ch.upper()) - 64
+                    col_index = index - 1
+                    cell_type = cell.attrib.get('t')
+                    raw_node = cell.find('a:v', self.XLSX_NS)
+                    raw = '' if raw_node is None or raw_node.text is None else raw_node.text
+                    if cell_type == 'inlineStr':
+                        value = ''.join((t.text or '') for t in cell.findall('.//a:t', self.XLSX_NS))
+                    elif cell_type == 's' and raw:
+                        value = shared[int(raw)]
+                    else:
+                        value = raw
+                    values[col_index] = value
+                rows.append(values)
+
+        if not rows:
+            raise ValueError("Planilha sem conteúdo.")
+
+        max_col = max(rows[0].keys()) if rows[0] else -1
+        headers = []
+        for i in range(max_col + 1):
+            headers.append(rows[0].get(i, '').strip())
+        normalized = [self._normalize_header(h) for h in headers]
+
+        for values in rows[1:]:
+            row_data = {}
+            for i, key in enumerate(normalized):
+                row_data[key] = str(values.get(i, '')).strip()
+            row_ano = row_data.get('ano_os', '')
+            row_os = row_data.get('os', '').zfill(4)
+            if row_ano == str(ano_os) and row_os == str(os_number).zfill(4):
+                return row_data
+        raise ValueError(f"OS {ano_os}-{str(os_number).zfill(4)} não encontrada na planilha.")
+
+    def _excel_serial_to_date(self, value):
+        if not value:
+            return ''
+        try:
+            serial = float(str(value).replace(',', '.'))
+            dt = datetime(1899, 12, 30) + timedelta(days=serial)
+            return dt.strftime('%d/%m/%Y')
+        except Exception:
+            return str(value)
+
     def _extract_pdf_text(self, pdf_path):
         full_text = []
         with fitz.open(str(pdf_path)) as pdf:
@@ -163,6 +280,10 @@ class DocxService:
     def _sanitize_upload_name(self, filename, fallback):
         clean = secure_filename(filename or '')
         return clean or fallback
+
+    def _sanitize_output_filename(self, text):
+        sanitized = re.sub(r'[<>:"/\\|?*]', '-', text).strip().rstrip('.')
+        return sanitized or 'Relatório de Entrega'
 
     def generate_proposta_os(self, data):
         self._ensure_runtime_folders()
@@ -233,7 +354,7 @@ class DocxService:
 
         return output_path
 
-    def generate_relatorio_entrega(self, autor, proposta_file, hu_files):
+    def generate_relatorio_entrega(self, autor, data_servidor, proposta_file, hu_files):
         self._ensure_runtime_folders()
         template_path = self._resolve_template_path('TEMPLATE_RELATORIO_ENTREGA_DOCX')
 
@@ -241,6 +362,10 @@ class DocxService:
         proposta_filename = self._sanitize_upload_name(proposta_file.filename, 'proposta.docx')
         proposta_target = proposta_dir / proposta_filename
         proposta_file.save(str(proposta_target))
+
+        identity = self._extract_proposta_identity(proposta_target, proposta_file.filename)
+        workbook = self._resolve_data_source_file()
+        sheet_row = self._read_xlsx_row_by_os(workbook, identity['ano_os'], identity['os'])
 
         saved_hus = []
         for hu_file in hu_files:
@@ -255,23 +380,49 @@ class DocxService:
             raise ValueError('Nenhuma HU válida foi enviada para gerar o relatório.')
 
         introducao = self._extract_intro_from_proposta_docx(proposta_target)
-        data_atual = datetime.now().strftime('%d/%m/%Y')
+        data_atual = data_servidor or datetime.now().strftime('%d/%m/%Y')
+        assunto = identity['assunto'] or sheet_row.get('assunto', '')
+        inicio = self._excel_serial_to_date(sheet_row.get('inicio', ''))
+        fim = self._excel_serial_to_date(sheet_row.get('fim', ''))
+        hst = sheet_row.get('hst', '')
+        valor = self._format_brl_value(float(sheet_row.get('valor', '0') or 0))
 
         doc = Document(template_path)
+        hu_lines = [f"Anexo {i}: {hu_file.stem}" for i, hu_file in enumerate(saved_hus, start=1)]
         replacements = {
             '<Autor>': autor,
             '{{AUTOR}}': autor,
+            '{{Autor}}': autor,
             '<Data atual do servidor>': data_atual,
             '{{DATA_ATUAL_SERVIDOR}}': data_atual,
+            '{{Data do Servidor}}': data_atual,
             '<Introdução da Proposta>': introducao,
             '<Introducao da Proposta>': introducao,
             '{{INTRODUCAO_PROPOSTA}}': introducao,
+            '{{Replicar Introdução da Proposta da Ordem de Serviço}}': introducao,
+            '{{Replicar Introducao da Proposta da Ordem de Servico}}': introducao,
+            '{{ANO_OS}}': identity['ano_os'],
+            '{{Ano_OS}}': identity['ano_os'],
+            '{{OS}}': identity['os'],
+            '{{Assunto}}': assunto,
+            '{{Início}}': inicio,
+            '{{Inicio}}': inicio,
+            '{{Fim}}': fim,
+            '{{HST}}': str(hst),
+            '{{Valor}}': valor,
+            '{{HU N}}': '\n'.join(hu_lines),
         }
+        for idx in range(1, 21):
+            replacements[f'{{{{HU {idx}}}}}'] = ''
+        for idx, line in enumerate(hu_lines, start=1):
+            replacements[f'{{{{HU {idx}}}}}'] = line
         self._replace_placeholders_everywhere(doc, replacements)
         self._write_hu_list_item_41(doc, saved_hus)
         self._write_hu_item_9(doc, saved_hus)
 
-        report_title = f"Relatorio de Entrega - {datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        report_title = self._sanitize_output_filename(
+            f"Relatório de Entrega OS {identity['ano_os']}-{identity['os']} - {assunto}".strip()
+        )
         output_docx = relatorio_dir / f'{report_title}.docx'
         doc.save(str(output_docx))
 

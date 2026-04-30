@@ -31,6 +31,7 @@ def relatorio_entrega():
     if request.method == 'POST':
         try:
             autor = request.form.get('autor', '').strip()
+            data_servidor = request.form.get('data_servidor', '').strip()
             proposta_file = request.files.get('proposta_file')
             hu_files = request.files.getlist('hu_files')
 
@@ -47,7 +48,7 @@ def relatorio_entrega():
                 return jsonify({'success': False, 'error': 'As HUs devem ser arquivos .pdf.'}), 400
 
             service = DocxService()
-            filepath, _, _ = service.generate_relatorio_entrega(autor, proposta_file, hu_files)
+            filepath, _, _ = service.generate_relatorio_entrega(autor, data_servidor, proposta_file, hu_files)
             return jsonify({'success': True, 'filename': os.path.basename(filepath)})
         except Exception as e:
             return jsonify({'success': False, 'error': str(e)}), 400
