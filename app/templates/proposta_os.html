@@ -1,0 +1,224 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+    <h2 class="mb-4">Gerar Proposta de OS</h2>
+    
+    <form id="propostaForm" class="card p-4 shadow-sm">
+        <!-- Seção: Nome do Arquivo -->
+        <h5 class="border-bottom pb-2">Identificação do Documento</h5>
+        <div class="row g-3 mb-4">
+            <div class="col-sm-12 col-md-3">
+                <label for="ano_os" class="form-label">Ano OS *</label>
+                <input type="number" step="1" min="1900" max="2100" class="form-control" id="ano_os" name="ano_os" placeholder="Ex: 2024" required>
+            </div>
+            <div class="col-sm-12 col-md-3">
+                <label for="num_os" class="form-label">Número OS *</label>
+                <input type="number" step="1" min="0" class="form-control" id="num_os" name="num_os" placeholder="Ex: 001" required>
+            </div>
+            <div class="col-sm-12 col-md-6">
+                <label for="titulo_os" class="form-label">Título do Documento *</label>
+                <input type="text" class="form-control" id="titulo_os" name="titulo_os" placeholder="Título que aparecerá no nome do arquivo" required>
+            </div>
+        </div>
+
+        <!-- Seção: Conteúdo do Documento -->
+        <h5 class="border-bottom pb-2">Conteúdo do Documento</h5>
+        <div class="row g-3 mb-4">
+            <div class="col-sm-12 col-md-6">
+                <label for="nome_autor" class="form-label">Nome do Autor *</label>
+                <input type="text" class="form-control" id="nome_autor" name="nome_autor" required>
+            </div>
+            <div class="col-sm-12 col-md-6">
+                <label for="nome_os" class="form-label">Nome da OS *</label>
+                <input type="text" class="form-control" id="nome_os" name="nome_os" required>
+            </div>
+            <div class="col-sm-12 col-md-6">
+                <label for="tipo_os" class="form-label">Tipo da OS *</label>
+                <select class="form-select" id="tipo_os" name="tipo_os" required>
+                    <option value="" selected disabled>Escolha...</option>
+                    <option value="Concepção">Concepção</option>
+                    <option value="Execução">Execução</option>
+                    <option value="Treinamento">Treinamento</option>
+                </select>
+            </div>
+            <div class="col-sm-12 col-md-6">
+                <label for="nome_solicitante" class="form-label">Nome do solicitante *</label>
+                <input type="text" class="form-control" id="nome_solicitante" name="nome_solicitante" required>
+            </div>
+            <div class="col-sm-12 col-md-6">
+                <label for="qtd_hst" class="form-label">Quantidade de HST *</label>
+                <input type="number" step="1" min="0" class="form-control" id="qtd_hst" name="qtd_hst" required oninput="calculateTotal()">
+            </div>
+            <div class="col-sm-12 col-md-6">
+                <label class="form-label">Cálculo em R$ (HST x 200,00)</label>
+                <input type="text" class="form-control" id="valor_total" readonly value="R$ 0,00">
+            </div>
+            <div class="col-12">
+                <label for="descricao_geral" class="form-label">Descrição Geral da OS *</label>
+                <textarea class="form-control" id="descricao_geral" name="descricao_geral" rows="3" required></textarea>
+            </div>
+        </div>
+
+        <!-- Seção: Itens da OS -->
+        <h5 class="border-bottom pb-2">Itens da OS</h5>
+        <div class="mb-4">
+            <div class="input-group mb-3">
+                <input type="text" id="item_input" class="form-control" placeholder="Descreva o item da OS...">
+                <button class="btn btn-primary" type="button" id="addItemBtn">
+                    <i class="bi bi-plus-lg"></i> Adicionar
+                </button>
+            </div>
+            <ul class="list-group" id="itensList">
+                <!-- Itens serão adicionados aqui -->
+            </ul>
+        </div>
+
+        <div class="row g-3 mb-4">
+            <div class="col-sm-12 col-md-4 offset-md-8 text-end">
+                <label class="form-label">Data Atual (Servidor)</label>
+                <input type="text" class="form-control text-end" value="{{ now }}" readonly disabled>
+            </div>
+        </div>
+
+        <div class="d-flex flex-column flex-md-row justify-content-between mt-4 gap-3">
+            <button type="button" class="btn btn-secondary w-100 w-md-auto" id="clearFormBtn">Limpar Formulário</button>
+            <button type="submit" class="btn btn-success btn-lg w-100 w-md-auto">
+                <i class="bi bi-file-earmark-word"></i> Gerar Documento
+            </button>
+        </div>
+    </form>
+</div>
+
+<!-- Modal de Sucesso -->
+<div class="modal fade" id="successModal" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-success text-white">
+                <h5 class="modal-title">Sucesso!</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                Documento gerado com sucesso.
+            </div>
+            <div class="modal-footer">
+                <a id="downloadBtn" href="#" class="btn btn-primary" onclick="closeModal()">Baixar Arquivo</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let itens = [];
+
+    function updateItensList() {
+        const list = document.getElementById('itensList');
+        list.innerHTML = '';
+        itens.forEach((item, index) => {
+            const li = document.createElement('li');
+            li.className = 'list-group-item d-flex justify-content-between align-items-center';
+            li.innerHTML = `
+                <span><strong>${index + 1}.</strong> ${item}</span>
+                <div>
+                    <button type="button" class="btn btn-sm btn-outline-primary me-2" onclick="editItem(${index})"><i class="bi bi-pencil"></i></button>
+                    <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeItem(${index})"><i class="bi bi-trash"></i></button>
+                </div>
+            `;
+            list.appendChild(li);
+        });
+    }
+
+    document.getElementById('addItemBtn').addEventListener('click', () => {
+        const input = document.getElementById('item_input');
+        if (input.value.trim()) {
+            itens.push(input.value.trim());
+            input.value = '';
+            updateItensList();
+        }
+    });
+
+    function removeItem(index) {
+        itens.splice(index, 1);
+        updateItensList();
+    }
+
+    function editItem(index) {
+        const newValue = prompt("Editar item:", itens[index]);
+        if (newValue !== null && newValue.trim()) {
+            itens[index] = newValue.trim();
+            updateItensList();
+        }
+    }
+
+    function calculateTotal() {
+        let hst = document.getElementById('qtd_hst').value || 0;
+        hst = Math.floor(hst); // Sem casas decimais
+        document.getElementById('qtd_hst').value = hst;
+        const total = hst * 200;
+        document.getElementById('valor_total').value = `R$ ${total.toLocaleString('pt-BR', {minimumFractionDigits: 2})}`;
+    }
+
+    function closeModal() {
+        const modalElement = document.getElementById('successModal');
+        const modal = bootstrap.Modal.getInstance(modalElement);
+        if (modal) {
+            modal.hide();
+        }
+    }
+
+    document.getElementById('clearFormBtn').addEventListener('click', () => {
+        if (confirm("Deseja realmente limpar todo o formulário?")) {
+            document.getElementById('propostaForm').reset();
+            itens = [];
+            updateItensList();
+            calculateTotal();
+        }
+    });
+
+    document.getElementById('propostaForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        
+        const form = e.target;
+        if (!form.checkValidity()) {
+            alert("Campos obrigatórios necessários!");
+            return;
+        }
+
+        const formData = {
+            ano_os: document.getElementById('ano_os').value,
+            num_os: document.getElementById('num_os').value,
+            titulo_os: document.getElementById('titulo_os').value,
+            nome_autor: document.getElementById('nome_autor').value,
+            nome_os: document.getElementById('nome_os').value,
+            tipo_os: document.getElementById('tipo_os').value,
+            nome_solicitante: document.getElementById('nome_solicitante').value,
+            descricao_geral: document.getElementById('descricao_geral').value,
+            qtd_hst: Math.floor(document.getElementById('qtd_hst').value),
+            itens: itens
+        };
+
+        try {
+            const response = await fetch("{{ url_for('documentos.proposta_os') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(formData)
+            });
+            
+            const result = await response.json();
+            if (result.success) {
+                const modal = new bootstrap.Modal(document.getElementById('successModal'));
+                document.getElementById('downloadBtn').href = `/documentos/download/${result.filename}`;
+                modal.show();
+            } else {
+                alert("Erro ao gerar documento!");
+                console.error(result.error);
+            }
+        } catch (error) {
+            alert("Erro ao gerar documento!");
+            console.error(error);
+        }
+    });
+</script>
+{% endblock %}
