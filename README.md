@@ -101,6 +101,18 @@ Build da imagem:
 docker build -t app-docs-product:latest .
 ```
 
+Build com versionamento por commit curto (recomendado):
+
+- O commit curto e os 7 primeiros caracteres do commit Git atual (ex.: `590f7e6`).
+- Isso ajuda a rastrear exatamente qual codigo gerou a imagem.
+
+No Windows (PowerShell):
+
+```powershell
+$sha = git rev-parse --short HEAD
+docker build -t app-docs-product:1.0.0-$sha -t app-docs-product:latest .
+```
+
 Executar container:
 
 ```bash
