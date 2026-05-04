@@ -42,10 +42,13 @@ def relatorio_entrega():
             if not proposta_file.filename.lower().endswith('.docx'):
                 return jsonify({'success': False, 'error': 'A proposta deve ser um arquivo .docx.'}), 400
             if not hu_files or all(not file.filename for file in hu_files):
-                return jsonify({'success': False, 'error': 'É necessário enviar pelo menos uma HU (PDF).'}), 400
-            invalid_hu = [file.filename for file in hu_files if file.filename and not file.filename.lower().endswith('.pdf')]
+                return jsonify({'success': False, 'error': 'É necessário enviar pelo menos uma HU (.docx ou .pdf).'}), 400
+            invalid_hu = [
+                file.filename for file in hu_files
+                if file.filename and not (file.filename.lower().endswith('.pdf') or file.filename.lower().endswith('.docx'))
+            ]
             if invalid_hu:
-                return jsonify({'success': False, 'error': 'As HUs devem ser arquivos .pdf.'}), 400
+                return jsonify({'success': False, 'error': 'As HUs devem ser arquivos .docx ou .pdf.'}), 400
 
             service = DocxService()
             filepath, _, _ = service.generate_relatorio_entrega(autor, data_servidor, proposta_file, hu_files)

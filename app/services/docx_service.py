@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from copy import deepcopy
 import os
 import re
 import shutil
@@ -7,16 +8,19 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 from zipfile import ZipFile
 
-import fitz
 from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Pt
 from docx.text.paragraph import Paragraph
 from flask import current_app
 from werkzeug.utils import secure_filename
 
 class DocxService:
     XLSX_NS = {'a': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+    W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    W_TAG = '{%s}' % W_NS
 
     def _resolve_template_path(self, config_key):
         template_path = current_app.config.get(config_key)
@@ -64,6 +68,14 @@ class DocxService:
         hu_dir.mkdir(parents=True, exist_ok=True)
         relatorio_dir.mkdir(parents=True, exist_ok=True)
         return proposta_dir, hu_dir, relatorio_dir
+
+    def _apply_inter_12_to_paragraph(self, paragraph):
+        """Formatação padrão do relatório (lista § 4.1 e alinhamentos ao template)."""
+        if paragraph._p.getparent() is None:
+            return
+        for run in paragraph.runs:
+            run.font.name = 'Inter'
+            run.font.size = Pt(12)
 
     def _replace_text_preserve_format(self, paragraph, key, value):
         if key not in paragraph.text:
@@ -221,60 +233,243 @@ class DocxService:
         except Exception:
             return str(value)
 
-    def _extract_pdf_text(self, pdf_path):
-        full_text = []
-        with fitz.open(str(pdf_path)) as pdf:
-            for page in pdf:
-                text = page.get_text('text').strip()
-                if text:
-                    full_text.append(text)
-        return '\n'.join(full_text).strip()
+    def _paragraph_matches_token(self, text, tokens):
+        normalized = (text or '').strip().replace('ç', 'c').replace('Ç', 'C').replace('ã', 'a').replace('Ã', 'A')
+        return any(token in normalized for token in tokens)
 
-    def _write_hu_item_9(self, doc, hu_files):
-        anchor = None
+    def _insert_page_break_before(self, paragraph):
+        if paragraph._p.getparent() is None:
+            return
+        break_p_elm = OxmlElement('w:p')
+        break_r = OxmlElement('w:r')
+        break_br = OxmlElement('w:br')
+        break_br.set('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}type', 'page')
+        break_r.append(break_br)
+        break_p_elm.append(break_r)
+        paragraph._p.addprevious(break_p_elm)
+
+    def _force_p_center_ooxml(self, p_elm):
+        p_pr = p_elm.find(self.W_TAG + 'pPr')
+        if p_pr is None:
+            p_pr = OxmlElement('w:pPr')
+            p_elm.insert(0, p_pr)
+        jc = p_pr.find(self.W_TAG + 'jc')
+        if jc is None:
+            jc = OxmlElement('w:jc')
+            p_pr.append(jc)
+        jc.set(qn('w:val'), 'center')
+
+    def _ct_p_plain_text_from_elm(self, p_elm):
+        parts = []
+        for t in p_elm.iter(self.W_TAG + 't'):
+            if t.text:
+                parts.append(t.text)
+        return ''.join(parts).strip()
+
+    def _paragraph_clear_top_spacing_ooxml(self, p_elm):
+        p_pr = p_elm.find(self.W_TAG + 'pPr')
+        if p_pr is None:
+            return
+        sp = p_pr.find(self.W_TAG + 'spacing')
+        if sp is None:
+            return
+        sp.set(qn('w:before'), '0')
+        sp.set(qn('w:beforeLines'), '0')
+
+    def _remove_preceding_empty_paragraphs(self, paragraph):
+        par = paragraph._p
+        parent = par.getparent()
+        if parent is None:
+            return
+        while True:
+            prev = par.getprevious()
+            if prev is None or prev.tag != self.W_TAG + 'p':
+                break
+            if self._ct_p_plain_text_from_elm(prev):
+                break
+            parent.remove(prev)
+
+    def _item9_anexos_heading_re(self):
+        return re.compile(r'^\s*9\.\s*Anexo', re.IGNORECASE)
+
+    def _find_item9_anexos_heading_paragraph(self, doc):
+        """Parágrafo do título «9. Anexos» (ou «9. Anexo») no corpo ou em células de tabela."""
+        heading_re = self._item9_anexos_heading_re()
+
+        def _scan(paragraphs):
+            for p in paragraphs:
+                if heading_re.search(p.text or ''):
+                    return p
+            return None
+
+        p = _scan(doc.paragraphs)
+        if p:
+            return p
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    p = _scan(cell.paragraphs)
+                    if p:
+                        return p
+        return None
+
+    def _normalize_item9_anexos_heading_position(self, doc):
+        """Coloca «9. Anexos» no topo útil da página (sem espaço extra nem parágrafos vazios acima)."""
+        p = self._find_item9_anexos_heading_paragraph(doc)
+        if not p:
+            return
+        try:
+            p.paragraph_format.space_before = Pt(0)
+        except Exception:
+            pass
+        self._paragraph_clear_top_spacing_ooxml(p._p)
+        self._remove_preceding_empty_paragraphs(p)
+
+    def _ensure_item9_anexos_starts_new_page(self, doc):
+        """«9. Anexos» inicia na primeira linha da página seguinte ao § 8."""
+        p = self._find_item9_anexos_heading_paragraph(doc)
+        if p and p._p.getparent() is not None:
+            self._insert_page_break_before(p)
+
+    def _ensure_two_blank_lines_after_item9_heading(self, doc):
+        """Duas linhas em branco entre o título do § 9 e a primeira linha da lista (ANEXO 1)."""
+        p = self._find_item9_anexos_heading_paragraph(doc)
+        if not p or p._p.getparent() is None:
+            return
+        cur = p
+        for _ in range(2):
+            cur = self._insert_after_paragraph(cur, '')
+
+    def _content_hu_placeholder_pattern(self):
+        # Template: {{Conteúdo da HU correspondente na lista de anexos}} ou ...lista de anexo}}
+        return re.compile(
+            r'\{\{\s*Conte[uú]do\s+da\s+HU\s+correspondente\s+na\s+lista\s+de\s+anexo[s]?\s*\}\}',
+            re.IGNORECASE,
+        )
+
+    def _collect_paragraphs_with_pattern(self, doc, pattern):
+        found = []
         for paragraph in doc.paragraphs:
-            text = paragraph.text.strip()
-            if '<Conteudo HUs Item 9>' in text or '{{HU_DETALHE_ITEM9}}' in text:
-                paragraph.text = text.replace('<Conteudo HUs Item 9>', '').replace('{{HU_DETALHE_ITEM9}}', '')
-                anchor = paragraph
-                break
-            if text.startswith('9. Anexos'):
-                anchor = paragraph
-                break
+            if pattern.search(paragraph.text or ''):
+                found.append(paragraph)
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        if pattern.search(paragraph.text or ''):
+                            found.append(paragraph)
+        for section in doc.sections:
+            for header in (section.header, section.footer):
+                for paragraph in header.paragraphs:
+                    if pattern.search(paragraph.text or ''):
+                        found.append(paragraph)
+                for table in header.tables:
+                    for row in table.rows:
+                        for cell in row.cells:
+                            for paragraph in cell.paragraphs:
+                                if pattern.search(paragraph.text or ''):
+                                    found.append(paragraph)
+        return found
 
-        if anchor is None:
-            doc.add_page_break()
-            anchor = doc.add_paragraph('9. Anexos')
+    def _write_hu_item_9(self, doc, hu_items):
+        """
+        Item 9: lista de anexos alinhada à secção 4.1 — um placeholder por HU,
+        cada um numa nova página, só com «ANEXO N - {rótulo do upload}» centrado.
+        """
+        pattern = self._content_hu_placeholder_pattern()
+        placeholder_paragraphs = self._collect_paragraphs_with_pattern(doc, pattern)
 
-        current = self._insert_after_paragraph(anchor, '')
-        for index, hu_file in enumerate(hu_files, start=1):
-            current = self._insert_after_paragraph(current, f'Anexo {index}: {hu_file.stem}')
-            content = self._extract_pdf_text(hu_file)
-            if content:
-                for line in content.splitlines():
-                    cleaned = line.strip()
-                    if cleaned:
-                        current = self._insert_after_paragraph(current, cleaned, WD_ALIGN_PARAGRAPH.JUSTIFY)
-            else:
-                current = self._insert_after_paragraph(current, 'Conteúdo não extraído do PDF.')
-            if index < len(hu_files):
-                current = self._insert_after_paragraph(current, '')
-                run = current.add_run()
-                run.add_break(WD_BREAK.PAGE)
+        if not placeholder_paragraphs:
+            return
 
-    def _write_hu_list_item_41(self, doc, hu_files):
-        hu_lines = [f"Anexo {i}: {hu_file.stem}" for i, hu_file in enumerate(hu_files, start=1)]
-        text = '\n'.join(hu_lines) if hu_lines else 'Sem HUs enviadas.'
+        template_p_xml = deepcopy(placeholder_paragraphs[0]._p)
+        anchor_tail = placeholder_paragraphs[-1]
+        while len(placeholder_paragraphs) < len(hu_items):
+            cloned = deepcopy(template_p_xml)
+            anchor_tail._p.addnext(cloned)
+            new_p = Paragraph(cloned, anchor_tail._parent)
+            placeholder_paragraphs.append(new_p)
+            anchor_tail = new_p
+
+        for j in range(len(hu_items), len(placeholder_paragraphs)):
+            p = placeholder_paragraphs[j]
+            p.text = pattern.sub('', p.text or '').strip()
+
+        for idx, hu_item in enumerate(hu_items):
+            paragraph = placeholder_paragraphs[idx]
+            if paragraph._p.getparent() is None:
+                continue
+
+            if idx > 0:
+                self._insert_page_break_before(paragraph)
+
+            paragraph.text = pattern.sub('', paragraph.text or '').strip()
+            label = (hu_item.get('label') or '').strip() or f'HU {idx + 1}'
+            line = f'ANEXO {idx + 1} - {label}'
+            paragraph.text = line
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            self._force_p_center_ooxml(paragraph._p)
+
+    def _write_hu_list_item_41(self, doc, hu_items):
+        pattern = re.compile(r'\{\{\s*HU\s+(\d+|N)\s*\}\}', re.IGNORECASE)
+        placeholders = [p for p in doc.paragraphs if pattern.search(p.text or '')]
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        if pattern.search(p.text or ''):
+                            placeholders.append(p)
+
+        if placeholders:
+            template_p = next(
+                (p for p in placeholders if p._p.pPr is not None and p._p.pPr.numPr is not None),
+                placeholders[0]
+            )
+            template_xml = deepcopy(template_p._p)
+            anchor_tail = placeholders[-1]
+            while len(placeholders) < len(hu_items):
+                cloned = deepcopy(template_xml)
+                anchor_tail._p.addnext(cloned)
+                p_new = Paragraph(cloned, anchor_tail._parent)
+                placeholders.append(p_new)
+                anchor_tail = p_new
+            for idx, hu in enumerate(hu_items):
+                p = placeholders[idx]
+                label = hu['label']
+                p_text = p.text or ''
+                matched = pattern.search(p_text)
+                if matched:
+                    p_text = p_text.replace(matched.group(0), label)
+                else:
+                    p_text = label
+                # Linhas clonadas repetem «Anexo 1» do modelo; alinha à ordem do formulário.
+                p_text = re.sub(
+                    r'(?i)Anexo\s*\d+',
+                    f'Anexo {idx + 1}',
+                    p_text,
+                    count=1,
+                )
+                p.text = p_text
+                self._apply_inter_12_to_paragraph(p)
+            for idx in range(len(hu_items), len(placeholders)):
+                placeholders[idx].text = ''
+                self._apply_inter_12_to_paragraph(placeholders[idx])
+            return
+
         for paragraph in doc.paragraphs:
             if '<Lista HUs>' in paragraph.text or '{{HU_LISTA}}' in paragraph.text:
-                paragraph.text = paragraph.text.replace('<Lista HUs>', text).replace('{{HU_LISTA}}', text)
-                for run in paragraph.runs:
-                    run.font.name = 'Inter'
-                return
-
-        for paragraph in doc.paragraphs:
-            if paragraph.text.strip().startswith('4.1.'):
-                self._insert_after_paragraph(paragraph, text)
+                paragraph.text = paragraph.text.replace('<Lista HUs>', '').replace('{{HU_LISTA}}', '')
+                current = paragraph
+                for idx, hu in enumerate(hu_items):
+                    if idx == 0:
+                        current.text = f"Anexo {idx + 1}: {hu['label']}"
+                        current.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                        self._apply_inter_12_to_paragraph(current)
+                    else:
+                        current = self._insert_after_paragraph(current, f"Anexo {idx + 1}: {hu['label']}")
+                        current.style = paragraph.style
+                        current.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                        self._apply_inter_12_to_paragraph(current)
                 return
 
     def _sanitize_upload_name(self, filename, fallback):
@@ -371,10 +566,11 @@ class DocxService:
         for hu_file in hu_files:
             if not hu_file or not hu_file.filename:
                 continue
-            hu_name = self._sanitize_upload_name(hu_file.filename, f'hu_{len(saved_hus)+1}.pdf')
+            original_stem = Path(hu_file.filename).stem
+            hu_name = self._sanitize_upload_name(hu_file.filename, f'hu_{len(saved_hus)+1}.docx')
             hu_target = hu_dir / hu_name
             hu_file.save(str(hu_target))
-            saved_hus.append(hu_target)
+            saved_hus.append({'path': hu_target, 'label': original_stem})
 
         if not saved_hus:
             raise ValueError('Nenhuma HU válida foi enviada para gerar o relatório.')
@@ -388,7 +584,7 @@ class DocxService:
         valor = self._format_brl_value(float(sheet_row.get('valor', '0') or 0))
 
         doc = Document(template_path)
-        hu_lines = [f"Anexo {i}: {hu_file.stem}" for i, hu_file in enumerate(saved_hus, start=1)]
+        hu_lines = [item['label'] for item in saved_hus]
         replacements = {
             '<Autor>': autor,
             '{{AUTOR}}': autor,
@@ -410,14 +606,12 @@ class DocxService:
             '{{Fim}}': fim,
             '{{HST}}': str(hst),
             '{{Valor}}': valor,
-            '{{HU N}}': '\n'.join(hu_lines),
         }
-        for idx in range(1, 21):
-            replacements[f'{{{{HU {idx}}}}}'] = ''
-        for idx, line in enumerate(hu_lines, start=1):
-            replacements[f'{{{{HU {idx}}}}}'] = line
-        self._replace_placeholders_everywhere(doc, replacements)
         self._write_hu_list_item_41(doc, saved_hus)
+        self._replace_placeholders_everywhere(doc, replacements)
+        self._normalize_item9_anexos_heading_position(doc)
+        self._ensure_item9_anexos_starts_new_page(doc)
+        self._ensure_two_blank_lines_after_item9_heading(doc)
         self._write_hu_item_9(doc, saved_hus)
 
         report_title = self._sanitize_output_filename(
